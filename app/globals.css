@@ -1,3 +1,4 @@
+
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
@@ -36,62 +37,71 @@
 }
 
 :root {
-  color-scheme: dark;
-  --sping-navy: #0b2a3c;
-  --sping-forest: #1d5550;
-  --sping-steel: #2a7a9e;
-  --sping-aqua: #8bbec6;
-  --sping-cream: #fff7dc;
+  color-scheme: light;
 
-  --background: var(--sping-navy);
-  --foreground: var(--sping-cream);
-  --card: #10364b;
-  --card-foreground: var(--sping-cream);
-  --popover: #10364b;
-  --popover-foreground: var(--sping-cream);
-  --primary: var(--sping-aqua);
-  --primary-foreground: var(--sping-navy);
-  --secondary: var(--sping-forest);
-  --secondary-foreground: var(--sping-cream);
-  --muted: #123a50;
-  --muted-foreground: #b7d2d6;
-  --accent: var(--sping-cream);
-  --accent-foreground: var(--sping-navy);
-  --steel: var(--sping-steel);
-  --destructive: oklch(0.7 0.19 22);
-  --border: rgb(139 190 198 / 18%);
-  --input: rgb(139 190 198 / 22%);
-  --ring: var(--sping-aqua);
-  --radius: 0.75rem;
+  --sping-navy: #173d31;
+  --sping-forest: #176b4d;
+  --sping-steel: #438b72;
+  --sping-aqua: #b9e7ca;
+  --sping-cream: #f7faf7;
+
+  --background: #f7faf7;
+  --foreground: #20352b;
+  --card: #ffffff;
+  --card-foreground: #20352b;
+  --popover: #ffffff;
+  --popover-foreground: #20352b;
+  --primary: #176b4d;
+  --primary-foreground: #ffffff;
+  --secondary: #e5f3e9;
+  --secondary-foreground: #245b42;
+  --muted: #edf3ee;
+  --muted-foreground: #617368;
+  --accent: #d9f0e1;
+  --accent-foreground: #174f3d;
+  --steel: #438b72;
+  --destructive: oklch(0.58 0.22 25);
+  --border: #dce7df;
+  --input: #d2dfd6;
+  --ring: #438b72;
+  --radius: 0.875rem;
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+
   html {
     scroll-behavior: smooth;
   }
+
   body {
     @apply bg-background font-sans text-foreground;
   }
+
   h1,
   h2,
   h3,
   h4 {
     @apply font-heading text-balance;
   }
+
+  ::selection {
+    background: #ccebd6;
+    color: #173d31;
+  }
 }
 
 @utility bg-grid {
   background-image:
-    linear-gradient(to right, rgb(139 190 198 / 7%) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(139 190 198 / 7%) 1px, transparent 1px);
+    linear-gradient(to right, rgb(23 107 77 / 6%) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(23 107 77 / 6%) 1px, transparent 1px);
   background-size: 48px 48px;
 }
 
 @utility text-gradient {
-  background-image: linear-gradient(100deg, var(--sping-aqua), var(--sping-cream));
+  background-image: linear-gradient(100deg, #176b4d, #69a987);
   background-clip: text;
   color: transparent;
 }
