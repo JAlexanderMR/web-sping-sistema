@@ -37,33 +37,33 @@
 }
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  --sping-navy: #173d31;
-  --sping-forest: #176b4d;
-  --sping-steel: #438b72;
-  --sping-aqua: #b9e7ca;
-  --sping-cream: #f7faf7;
+  --sping-navy: #0b2a3c;
+  --sping-forest: #1d5550;
+  --sping-steel: #2a7a9e;
+  --sping-aqua: #8bbec6;
+  --sping-cream: #fff7dc;
 
-  --background: #f7faf7;
-  --foreground: #20352b;
-  --card: #ffffff;
-  --card-foreground: #20352b;
-  --popover: #ffffff;
-  --popover-foreground: #20352b;
-  --primary: #176b4d;
+  --background: #041d22;
+  --foreground: #fff7dc;
+  --card: #10364b;
+  --card-foreground: #fff7dc;
+  --popover: #10364b;
+  --popover-foreground: #fff7dc;
+  --primary: #1d5550;
   --primary-foreground: #ffffff;
-  --secondary: #e5f3e9;
-  --secondary-foreground: #245b42;
-  --muted: #edf3ee;
-  --muted-foreground: #617368;
-  --accent: #d9f0e1;
-  --accent-foreground: #174f3d;
-  --steel: #438b72;
+  --secondary: #0b2a3c;
+  --secondary-foreground: #8bbec6;
+  --muted: #10364b;
+  --muted-foreground: #b7d2d6;
+  --accent: #2a7a9e;
+  --accent-foreground: #ffffff;
+  --steel: #2a7a9e;
   --destructive: oklch(0.58 0.22 25);
-  --border: #dce7df;
-  --input: #d2dfd6;
-  --ring: #438b72;
+  --border: rgb(139 190 198 / 18%);
+  --input: rgb(139 190 198 / 25%);
+  --ring: #8bbec6;
   --radius: 0.875rem;
 }
 
@@ -78,6 +78,7 @@
 
   body {
     @apply bg-background font-sans text-foreground;
+    background-color: #041d22;
   }
 
   h1,
@@ -88,20 +89,20 @@
   }
 
   ::selection {
-    background: #ccebd6;
-    color: #173d31;
+    background: #2a7a9e;
+    color: #ffffff;
   }
 }
 
 @utility bg-grid {
   background-image:
-    linear-gradient(to right, rgb(23 107 77 / 6%) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(23 107 77 / 6%) 1px, transparent 1px);
+    linear-gradient(to right, rgb(139 190 198 / 6%) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(139 190 198 / 6%) 1px, transparent 1px);
   background-size: 48px 48px;
 }
 
 @utility text-gradient {
-  background-image: linear-gradient(100deg, #176b4d, #69a987);
+  background-image: linear-gradient(100deg, #8bbec6, #2a7a9e);
   background-clip: text;
   color: transparent;
 }
