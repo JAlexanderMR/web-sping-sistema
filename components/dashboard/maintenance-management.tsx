@@ -42,10 +42,28 @@ type Mantenimiento = {
   descripcion_trabajo: string;
 };
 
+type AlertaRechazo = {
+  id: number;
+  dispositivo_id: number;
+  tipo_reporte: string;
+  severidad: string;
+  descripcion: string;
+  datos_adicionales: Record<string, unknown> | null;
+  estado_reporte: string;
+  fecha_reporte: string;
+  dispositivo: (Dispositivo & {
+    limite_rechazos_revision?: number;
+    ventana_rechazos_minutos?: number;
+  }) | null;
+};
+
 export function MaintenanceManagement() {
   const [dispositivos, setDispositivos] = useState<Dispositivo[]>([]);
   const [trabajadores, setTrabajadores] = useState<Trabajador[]>([]);
   const [reportes, setReportes] = useState<ReporteMantenimiento[]>([]);
+  const [alertasRechazo, setAlertasRechazo] = useState<AlertaRechazo[]>([]);
+  const [trabajadoresAlerta, setTrabajadoresAlerta] = useState<Record<number, string>>({});
+  const [asignandoAlertaId, setAsignandoAlertaId] = useState<number | null>(null);
 
   const [dispositivoId, setDispositivoId] = useState('');
   const [trabajadorId, setTrabajadorId] = useState('');
@@ -82,6 +100,7 @@ export function MaintenanceManagement() {
       setDispositivos(data.dispositivos ?? []);
       setTrabajadores(data.trabajadores ?? []);
       setReportes(data.reportesPendientes ?? []);
+      setAlertasRechazo(data.alertasRechazo ?? []);
 
       setDispositivoId((actual) => {
         if (
@@ -169,6 +188,54 @@ export function MaintenanceManagement() {
       );
     } finally {
       setAsignando(false);
+    }
+  }
+
+  async function asignarAlerta(alerta: AlertaRechazo) {
+    setMensaje('');
+    setError('');
+
+    const responsableId = trabajadoresAlerta[alerta.id];
+    if (!responsableId) {
+      setError(`Selecciona el trabajador que atenderá la alerta #${alerta.id}.`);
+      return;
+    }
+    if (!alerta.dispositivo) {
+      setError('No se encontró el dispositivo asociado a esta alerta.');
+      return;
+    }
+
+    const confirmacion = window.confirm(
+      `¿Asignar la alerta #${alerta.id} del dispositivo ${alerta.dispositivo.codigo_dispositivo} y ponerlo en mantenimiento?`
+    );
+    if (!confirmacion) return;
+
+    setAsignandoAlertaId(alerta.id);
+    try {
+      const response = await fetch('/api/mantenimientos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dispositivo_id: alerta.dispositivo_id,
+          usuario_mantenimiento_id: Number(responsableId),
+          motivo: `Atención de alerta por rechazos reiterados #${alerta.id}`,
+          descripcion_trabajo: alerta.descripcion,
+          reporte_dispositivo_id: alerta.id,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'No se pudo asignar la alerta.');
+      setMensaje(data.mensaje || 'Alerta asignada correctamente.');
+      setTrabajadoresAlerta((actual) => {
+        const next = { ...actual };
+        delete next[alerta.id];
+        return next;
+      });
+      await cargarDatos();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error asignando la alerta.');
+    } finally {
+      setAsignandoAlertaId(null);
     }
   }
 
@@ -458,6 +525,73 @@ export function MaintenanceManagement() {
             Enviar el reporte no reactiva el dispositivo. El administrador conserva la autorización final.
           </p>
         </div>
+      </div>
+
+      <div className="mt-8">
+        <div className="mb-5">
+          <p className="text-sm font-medium uppercase tracking-wider text-primary">
+            Alertas automáticas
+          </p>
+          <h3 className="mt-1 font-heading text-xl font-bold">Rechazos reiterados por dispositivo</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Estas alertas se generan al alcanzar el umbral de rechazos dentro de la ventana configurada.
+          </p>
+        </div>
+
+        {cargando ? (
+          <div className="rounded-2xl border border-border bg-card p-6 text-center text-sm text-muted-foreground">Consultando alertas...</div>
+        ) : alertasRechazo.length === 0 ? (
+          <div className="rounded-2xl border border-border bg-card p-6 text-center">
+            <p className="font-semibold">No hay alertas de rechazos abiertas</p>
+            <p className="mt-1 text-sm text-muted-foreground">Cuando un dispositivo alcance el límite configurado, aparecerá aquí.</p>
+          </div>
+        ) : (
+          <div className="grid gap-5 lg:grid-cols-2">
+            {alertasRechazo.map((alerta) => {
+              const datos = alerta.datos_adicionales ?? {};
+              const total = datos.rechazos_detectados ?? 'No disponible';
+              const umbral = datos.umbral ?? alerta.dispositivo?.limite_rechazos_revision ?? 5;
+              const ventana = datos.ventana_minutos ?? alerta.dispositivo?.ventana_rechazos_minutos ?? 1440;
+              return (
+                <article key={alerta.id} className="rounded-2xl border border-amber-500/30 bg-card p-6 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-muted-foreground">Alerta #{alerta.id}</p>
+                      <h4 className="mt-1 font-heading text-lg font-bold">{alerta.dispositivo?.nombre ?? 'Dispositivo SPING'}</h4>
+                      <p className="text-sm text-muted-foreground">{alerta.dispositivo?.codigo_dispositivo ?? 'Sin código'}</p>
+                    </div>
+                    <span className="rounded-full bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-400">{alerta.estado_reporte === 'EN_REVISION' ? 'En revisión' : 'Abierta'}</span>
+                  </div>
+                  <p className="mt-4 text-sm">{alerta.descripcion}</p>
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    <div className="rounded-xl bg-muted/50 p-3"><p className="text-xs text-muted-foreground">Rechazos detectados</p><p className="mt-1 text-lg font-bold">{String(total)} / {String(umbral)}</p></div>
+                    <div className="rounded-xl bg-muted/50 p-3"><p className="text-xs text-muted-foreground">Ventana</p><p className="mt-1 text-lg font-bold">{Math.round(Number(ventana) / 60)} horas</p></div>
+                  </div>
+                  <p className="mt-3 text-xs text-muted-foreground">Generada: {new Date(alerta.fecha_reporte).toLocaleString('es-CO')}</p>
+                  <div className="mt-5 border-t border-border pt-4">
+                    <label className="mb-2 block text-sm font-medium">Asignar trabajador de mantenimiento</label>
+                    <select
+                      value={trabajadoresAlerta[alerta.id] ?? ''}
+                      onChange={(e) => setTrabajadoresAlerta((actual) => ({ ...actual, [alerta.id]: e.target.value }))}
+                      disabled={asignandoAlertaId !== null || alerta.estado_reporte === 'EN_REVISION'}
+                      className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:border-primary disabled:opacity-50"
+                    >
+                      <option value="">Seleccionar trabajador</option>
+                      {trabajadores.map((trabajador) => <option key={trabajador.id} value={trabajador.id}>{trabajador.nombre} ({trabajador.codigo_usuario})</option>)}
+                    </select>
+                    {alerta.estado_reporte === 'EN_REVISION' ? (
+                      <p className="mt-2 text-xs text-amber-500">Esta alerta ya fue asignada. Revisa la tarea correspondiente en los reportes de mantenimiento.</p>
+                    ) : (
+                      <button type="button" onClick={() => asignarAlerta(alerta)} disabled={asignandoAlertaId !== null || trabajadores.length === 0} className="mt-3 w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50">
+                        {asignandoAlertaId === alerta.id ? 'Asignando...' : 'Asignar alerta y poner equipo en mantenimiento'}
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="mt-8">

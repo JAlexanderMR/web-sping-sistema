@@ -1,7 +1,10 @@
 
 import { NextResponse } from 'next/server';
+import { createHmac, randomInt } from 'node:crypto';
 import { createAuthServerClient } from '@/lib/supabase/auth-server';
 import { supabaseServer } from '@/lib/supabase/server';
+
+export const runtime = 'nodejs';
 
 type MotivoReporte = 'PERDIDA' | 'ROBO' | 'DANADA';
 
@@ -11,13 +14,51 @@ const MOTIVOS_VALIDOS: MotivoReporte[] = [
   'DANADA',
 ];
 
+
+const DIAS_VIGENCIA_CODIGO = 7;
+
+function generarCodigoActivacion(): string {
+  return randomInt(0, 100_000_000).toString().padStart(8, '0');
+}
+
+function hashCodigoActivacion(usuarioId: number, codigo: string): string {
+  const secreto = process.env.SUPABASE_SECRET_KEY;
+
+  if (!secreto) {
+    throw new Error('No está configurada la clave administrativa de Supabase.');
+  }
+
+  return createHmac('sha256', secreto)
+    .update(`SPING-RFID-ACTIVACION-V1:${usuarioId}:${codigo}`)
+    .digest('hex');
+}
+
+function fechaExpiracionCodigo(): string {
+  return new Date(
+    Date.now() + DIAS_VIGENCIA_CODIGO * 24 * 60 * 60 * 1000
+  ).toISOString();
+}
+
+function respuestaErrorRPC(error: { code?: string; message?: string }, accion: string) {
+  console.error(`Error RPC RFID (${accion}):`, error.message ?? error.code);
+  const codigo = error.code;
+  const status = codigo === '23505' || codigo === '23514' ? 409
+    : codigo === '42501' ? 403
+    : codigo === '22023' ? 400
+    : 500;
+  return NextResponse.json(
+    { error: status === 500 ? 'No se pudo completar la operación RFID.' : (error.message ?? 'La operación no es válida.') },
+    { status }
+  );
+}
+
 // =====================================================
 // HISTORIAL DE MOVIMIENTOS RFID
 // =====================================================
 
 type EventoRFID = {
   rfid_id: number;
-  usuario_id: number;
+  usuario_id: number | null;
   accion: string;
   estado_anterior: string | null;
   estado_nuevo: string | null;
@@ -103,8 +144,9 @@ export async function GET() {
 
     let consultaTarjetas = supabaseServer
       .from('rfid')
-      .select('id, uid, usuario_id, estado, fecha_asignacion')
-      .order('fecha_asignacion', { ascending: false });
+      .select('id, uid, usuario_id, estado, fecha_ingreso, fecha_asignacion, fecha_activacion')
+      .order('fecha_ingreso', { ascending: false, nullsFirst: false })
+      .order('fecha_asignacion', { ascending: false, nullsFirst: false });
 
     // Los usuarios normales y mantenimiento solo consultan sus tarjetas.
     if (!esAdmin) {
@@ -246,6 +288,204 @@ export async function POST(request: Request) {
     const accion = String(body.accion ?? 'registrar').toLowerCase();
 
     // =====================================================
+    // 0. ACTIVAR TARJETA CON CÓDIGO (USUARIO AUTENTICADO)
+    // =====================================================
+
+    if (accion === 'activar_codigo') {
+      const codigo = String(body.codigo ?? '').replace(/\s/g, '');
+
+      if (!/^\d{8}$/.test(codigo)) {
+        return NextResponse.json(
+          { error: 'El código de activación debe contener exactamente 8 dígitos.' },
+          { status: 400 }
+        );
+      }
+
+      const codigoHash = hashCodigoActivacion(perfil.id, codigo);
+      const { data: resultado, error: activacionError } = await supabaseServer.rpc(
+        'sping_activar_rfid_con_codigo',
+        {
+          p_usuario_id: perfil.id,
+          p_codigo_hash: codigoHash,
+        }
+      );
+
+      if (activacionError) {
+        return respuestaErrorRPC(activacionError, 'activar_codigo');
+      }
+
+      if (!resultado?.exitoso) {
+        const status = resultado?.codigo === 'CODIGO_BLOQUEADO' ? 429
+          : resultado?.codigo === 'CODIGO_VENCIDO' ? 410
+          : resultado?.codigo === 'SIN_CODIGO_PENDIENTE' ? 404
+          : resultado?.codigo === 'USUARIO_INACTIVO' ? 403
+          : 400;
+
+        return NextResponse.json(
+          {
+            exitoso: false,
+            error: resultado?.mensaje ?? 'No fue posible activar la tarjeta.',
+            codigo: resultado?.codigo,
+            intentos_restantes: resultado?.intentos_restantes,
+          },
+          { status }
+        );
+      }
+
+      return NextResponse.json({
+        exitoso: true,
+        mensaje: resultado.mensaje ?? 'Tu tarjeta RFID fue activada correctamente.',
+        rfid: {
+          id: resultado.rfid_id,
+          uid: resultado.uid,
+          estado: resultado.estado,
+        },
+      });
+    }
+
+    // =====================================================
+    // 0. ASIGNAR TARJETA DISPONIBLE Y GENERAR CÓDIGO (ADMIN)
+    // =====================================================
+
+    if (accion === 'asignar') {
+      if (!esAdmin) {
+        return NextResponse.json(
+          { error: 'Solo un administrador puede asignar tarjetas del inventario.' },
+          { status: 403 }
+        );
+      }
+
+      const rfidId = Number(body.rfidId);
+      const usuarioDestinoId = Number(body.usuarioId);
+
+      if (!Number.isInteger(rfidId) || rfidId <= 0 || !Number.isInteger(usuarioDestinoId) || usuarioDestinoId <= 0) {
+        return NextResponse.json(
+          { error: 'La tarjeta y el usuario seleccionados no son válidos.' },
+          { status: 400 }
+        );
+      }
+
+      const { data: tarjeta, error: tarjetaError } = await supabaseServer
+        .from('rfid')
+        .select('id, uid, usuario_id, estado')
+        .eq('id', rfidId)
+        .maybeSingle();
+
+      if (tarjetaError || !tarjeta) {
+        return NextResponse.json({ error: 'No se encontró la tarjeta.' }, { status: 404 });
+      }
+
+      if (tarjeta.estado !== 'DISPONIBLE' || tarjeta.usuario_id !== null) {
+        return NextResponse.json({ error: 'La tarjeta ya no está disponible en el inventario.' }, { status: 409 });
+      }
+
+      const { data: usuarioDestino, error: usuarioError } = await supabaseServer
+        .from('usuarios')
+        .select('id, nombre, codigo_usuario, estado')
+        .eq('id', usuarioDestinoId)
+        .maybeSingle();
+
+      if (usuarioError || !usuarioDestino || usuarioDestino.estado !== 'ACTIVO') {
+        return NextResponse.json({ error: 'El usuario no existe o no está activo.' }, { status: 404 });
+      }
+
+      const codigo = generarCodigoActivacion();
+      const codigoHash = hashCodigoActivacion(usuarioDestinoId, codigo);
+      const expiracion = fechaExpiracionCodigo();
+
+      const { data: resultado, error: asignacionError } = await supabaseServer.rpc(
+        'sping_asignar_rfid_inventario',
+        {
+          p_rfid_id: rfidId,
+          p_usuario_id: usuarioDestinoId,
+          p_codigo_hash: codigoHash,
+          p_registrado_por: perfil.id,
+          p_fecha_expiracion: expiracion,
+        }
+      );
+
+      if (asignacionError) return respuestaErrorRPC(asignacionError, 'asignar');
+      if (!resultado?.exitoso) {
+        return NextResponse.json({ error: 'La base de datos no confirmó la asignación de la tarjeta.' }, { status: 500 });
+      }
+
+      return NextResponse.json({
+        exitoso: true,
+        mensaje: 'Tarjeta reservada. Entrega este código al usuario; solo se mostrará ahora.',
+        codigoActivacion: codigo,
+        fechaExpiracion: expiracion,
+        tarjeta: {
+          id: tarjeta.id,
+          uid: tarjeta.uid,
+          usuario_id: usuarioDestino.id,
+          usuario: usuarioDestino.nombre,
+          estado: resultado?.estado ?? 'RESERVADA',
+        },
+      }, { status: 201 });
+    }
+
+    // =====================================================
+    // 0. REEMITIR CÓDIGO DE ACTIVACIÓN (ADMIN)
+    // =====================================================
+
+    if (accion === 'reemitar_codigo') {
+      if (!esAdmin) {
+        return NextResponse.json({ error: 'Solo un administrador puede emitir un nuevo código.' }, { status: 403 });
+      }
+
+      const rfidId = Number(body.rfidId);
+      if (!Number.isInteger(rfidId) || rfidId <= 0) {
+        return NextResponse.json({ error: 'El identificador de la tarjeta no es válido.' }, { status: 400 });
+      }
+
+      const { data: tarjeta, error: tarjetaError } = await supabaseServer
+        .from('rfid')
+        .select('id, uid, usuario_id, estado')
+        .eq('id', rfidId)
+        .maybeSingle();
+
+      if (tarjetaError || !tarjeta) {
+        return NextResponse.json({ error: 'No se encontró la tarjeta.' }, { status: 404 });
+      }
+
+      if (tarjeta.estado !== 'RESERVADA' || !tarjeta.usuario_id) {
+        return NextResponse.json({ error: 'Solo se puede emitir un nuevo código para tarjetas reservadas.' }, { status: 409 });
+      }
+
+      const codigo = generarCodigoActivacion();
+      const codigoHash = hashCodigoActivacion(tarjeta.usuario_id, codigo);
+      const expiracion = fechaExpiracionCodigo();
+
+      const { data: resultado, error: reemisionError } = await supabaseServer.rpc(
+        'sping_reemitir_codigo_rfid',
+        {
+          p_rfid_id: rfidId,
+          p_codigo_hash: codigoHash,
+          p_registrado_por: perfil.id,
+          p_fecha_expiracion: expiracion,
+        }
+      );
+
+      if (reemisionError) return respuestaErrorRPC(reemisionError, 'reemitar_codigo');
+      if (!resultado?.exitoso) {
+        return NextResponse.json({ error: 'La base de datos no confirmó la reemisión del código.' }, { status: 500 });
+      }
+
+      return NextResponse.json({
+        exitoso: true,
+        mensaje: 'Se generó un nuevo código. El anterior quedó revocado.',
+        codigoActivacion: codigo,
+        fechaExpiracion: expiracion,
+        tarjeta: {
+          id: tarjeta.id,
+          uid: tarjeta.uid,
+          usuario_id: tarjeta.usuario_id,
+          estado: resultado?.estado ?? 'RESERVADA',
+        },
+      });
+    }
+
+    // =====================================================
     // 1. APROBAR O RECHAZAR SOLICITUDES DE REPOSICIÓN (ADMIN)
     // =====================================================
 
@@ -357,7 +597,7 @@ export async function POST(request: Request) {
         exitoso: true,
         historialRegistrado: historialGuardado,
         mensaje: estadoDestino === 'APROBADA'
-          ? 'Solicitud aprobada. La tarjeta anterior permanece REPORTADA; ahora puedes registrar una nueva tarjeta para este usuario.'
+          ? 'Solicitud aprobada. La tarjeta anterior permanece REPORTADA; ahora puedes asignar una tarjeta disponible del inventario a este usuario.'
           : 'Solicitud rechazada. La tarjeta anterior permanece REPORTADA.',
         solicitud: solicitudActualizada,
       });
@@ -439,7 +679,7 @@ export async function POST(request: Request) {
 
       if (otraTarjeta) {
         return NextResponse.json(
-          { error: 'El usuario ya tiene otra tarjeta activa. Debes resolver esa asignación antes de reactivar esta tarjeta.' },
+          { error: 'El usuario ya tiene otra tarjeta activa o reservada. Debes resolver esa asignación antes de reactivar esta tarjeta.' },
           { status: 409 }
         );
       }
@@ -615,7 +855,7 @@ export async function POST(request: Request) {
             .from('rfid')
             .select('id')
             .eq('usuario_id', tarjeta.usuario_id)
-            .eq('estado', 'ACTIVA')
+            .in('estado', ['ACTIVA', 'RESERVADA'])
             .neq('id', tarjeta.id)
             .maybeSingle();
 
@@ -630,7 +870,7 @@ export async function POST(request: Request) {
           return NextResponse.json(
             {
               error:
-                'El usuario ya tiene otra tarjeta activa. No es posible desbloquear esta tarjeta.',
+                'El usuario ya tiene otra tarjeta activa o reservada. No es posible desbloquear esta tarjeta.',
             },
             { status: 409 }
           );
@@ -871,7 +1111,7 @@ export async function POST(request: Request) {
     }
 
     // =====================================================
-    // 3. REGISTRAR TARJETA
+    // 3. REGISTRAR TARJETA EN INVENTARIO (ADMIN)
     // =====================================================
 
     if (accion !== 'registrar') {
@@ -881,165 +1121,44 @@ export async function POST(request: Request) {
       );
     }
 
+    if (!esAdmin) {
+      return NextResponse.json(
+        { error: 'Solo un administrador puede registrar tarjetas en el inventario.' },
+        { status: 403 }
+      );
+    }
+
     const uid = String(body.uid ?? '')
       .trim()
       .replace(/[\s:-]/g, '')
       .toUpperCase();
 
-    if (!uid || uid.length > 64) {
+    // UID hexadecimal de 4, 7 o 10 bytes (y longitudes compatibles).
+    if (!/^(?:[0-9A-F]{2}){4,20}$/.test(uid)) {
       return NextResponse.json(
-        { error: 'El UID de la tarjeta no es válido.' },
+        { error: 'El UID debe contener entre 8 y 40 caracteres hexadecimales, en pares.' },
         { status: 400 }
       );
     }
 
-    let usuarioDestinoId = perfil.id;
-
-    if (esAdmin && body.usuarioId !== undefined) {
-      const idSolicitado = Number(body.usuarioId);
-
-      if (!Number.isInteger(idSolicitado) || idSolicitado <= 0) {
-        return NextResponse.json(
-          { error: 'El usuario seleccionado no es válido.' },
-          { status: 400 }
-        );
+    const { data: resultado, error: registroError } = await supabaseServer.rpc(
+      'sping_registrar_rfid_inventario',
+      {
+        p_uid: uid,
+        p_registrado_por: perfil.id,
       }
+    );
 
-      usuarioDestinoId = idSolicitado;
-    } else if (
-      !esAdmin &&
-      body.usuarioId !== undefined &&
-      Number(body.usuarioId) !== perfil.id
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            'Solo puedes registrar una tarjeta para tu propia cuenta.',
-        },
-        { status: 403 }
-      );
+    if (registroError) return respuestaErrorRPC(registroError, 'registrar_inventario');
+    if (!resultado?.exitoso || !resultado?.tarjeta) {
+      return NextResponse.json({ error: 'La base de datos no confirmó el ingreso al inventario.' }, { status: 500 });
     }
-
-    const { data: usuarioDestino, error: usuarioError } =
-      await supabaseServer
-        .from('usuarios')
-        .select('id, codigo_usuario, nombre, rol, estado')
-        .eq('id', usuarioDestinoId)
-        .maybeSingle();
-
-    if (
-      usuarioError ||
-      !usuarioDestino ||
-      usuarioDestino.estado !== 'ACTIVO'
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            'El usuario seleccionado no existe o está inactivo.',
-        },
-        { status: 404 }
-      );
-    }
-
-    // Un usuario solamente puede tener una tarjeta activa.
-    const { data: tarjetaActual, error: tarjetaActualError } =
-      await supabaseServer
-        .from('rfid')
-        .select('id, uid, estado, fecha_asignacion')
-        .eq('usuario_id', usuarioDestinoId)
-        .eq('estado', 'ACTIVA')
-        .maybeSingle();
-
-    if (tarjetaActualError) {
-      return NextResponse.json(
-        { error: 'No se pudo consultar la tarjeta actual.' },
-        { status: 500 }
-      );
-    }
-
-    if (tarjetaActual) {
-      return NextResponse.json(
-        {
-          error: 'Este usuario ya tiene una tarjeta RFID activa.',
-          yaTieneTarjeta: true,
-          tarjeta: tarjetaActual,
-        },
-        { status: 409 }
-      );
-    }
-
-    // Verificar que el UID no esté registrado.
-    const { data: rfidExistente, error: busquedaError } =
-      await supabaseServer
-        .from('rfid')
-        .select('id, uid, usuario_id, estado')
-        .eq('uid', uid)
-        .maybeSingle();
-
-    if (busquedaError) {
-      return NextResponse.json(
-        { error: 'No se pudo verificar la tarjeta.' },
-        { status: 500 }
-      );
-    }
-
-    if (rfidExistente) {
-      return NextResponse.json(
-        {
-          error: 'Esta tarjeta RFID ya se encuentra registrada.',
-          yaRegistrada: true,
-        },
-        { status: 409 }
-      );
-    }
-
-    const { data: nuevaTarjeta, error: registroError } =
-      await supabaseServer
-        .from('rfid')
-        .insert({
-          uid,
-          usuario_id: usuarioDestinoId,
-          estado: 'ACTIVA',
-        })
-        .select('id, uid, usuario_id, estado, fecha_asignacion')
-        .single();
-
-    if (registroError) {
-      if (registroError.code === '23505') {
-        return NextResponse.json(
-          {
-            error:
-              'El usuario ya tiene una tarjeta activa o el UID ya está registrado.',
-          },
-          { status: 409 }
-        );
-      }
-
-      console.error('Error registrando tarjeta:', registroError.message);
-
-      return NextResponse.json(
-        { error: 'No se pudo registrar la tarjeta.' },
-        { status: 500 }
-      );
-    }
-
-    const historialGuardado = await registrarHistorialRFID({
-      rfid_id: nuevaTarjeta.id,
-      usuario_id: usuarioDestinoId,
-      accion: 'REGISTRO',
-      estado_anterior: null,
-      estado_nuevo: 'ACTIVA',
-      motivo: 'Asignación inicial o reposición de tarjeta',
-      registrado_por: perfil.id,
-    });
 
     return NextResponse.json(
       {
         exitoso: true,
-        historialRegistrado: historialGuardado,
-        mensaje: 'Tarjeta RFID registrada correctamente.',
-        usuario: usuarioDestino,
-        rfid: nuevaTarjeta,
+        mensaje: 'Tarjeta ingresada al inventario y disponible para asignación.',
+        rfid: resultado?.tarjeta ?? null,
       },
       { status: 201 }
     );

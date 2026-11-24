@@ -17,7 +17,9 @@ type TarjetaRFID = {
   uid: string;
   usuario_id: number | null;
   estado: string;
+  fecha_ingreso?: string | null;
   fecha_asignacion: string | null;
+  fecha_activacion?: string | null;
   usuario?: {
     id: number;
     codigo_usuario: string;
@@ -43,7 +45,7 @@ type SolicitudReposicion = {
 type HistorialRFID = {
   id: number;
   rfid_id: number;
-  usuario_id: number;
+  usuario_id: number | null;
   accion: string;
   estado_anterior: string | null;
   estado_nuevo: string | null;
@@ -56,6 +58,8 @@ type HistorialRFID = {
 };
 
 const ESTADOS_TARJETA = [
+  'DISPONIBLE',
+  'RESERVADA',
   'ACTIVA',
   'BLOQUEADA',
   'REPORTADA',
@@ -80,11 +84,13 @@ function formatearFecha(fecha: string | null | undefined) {
 function colorEstado(estado: string) {
   switch (estado?.toUpperCase()) {
     case 'ACTIVA':
+    case 'DISPONIBLE':
     case 'APROBADA':
     case 'ATENDIDA':
       return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
 
     case 'BLOQUEADA':
+    case 'RESERVADA':
     case 'PENDIENTE':
     case 'PENDIENTE_REVISION':
       return 'bg-amber-500/15 text-amber-400 border-amber-500/30';
@@ -101,6 +107,8 @@ function colorEstado(estado: string) {
 
 function etiquetaEstado(estado: string) {
   const etiquetas: Record<string, string> = {
+    DISPONIBLE: 'Disponible',
+    RESERVADA: 'Reservada',
     ACTIVA: 'Activa',
     BLOQUEADA: 'Bloqueada',
     REPORTADA: 'Reportada',
@@ -141,7 +149,9 @@ export default function RFIDAssignment() {
   const [filtroEstado, setFiltroEstado] = useState('TODOS');
 
   const [uid, setUid] = useState('');
-  const [usuarioId, setUsuarioId] = useState('');
+  const [tarjetaParaAsignarId, setTarjetaParaAsignarId] = useState<number | null>(null);
+  const [usuarioAsignacionId, setUsuarioAsignacionId] = useState('');
+  const [codigoGenerado, setCodigoGenerado] = useState<{ codigo: string; uid: string; usuario: string; fechaExpiracion: string } | null>(null);
 
   const [mostrarFormulario, setMostrarFormulario] = useState(false);
 
@@ -216,6 +226,8 @@ export default function RFIDAssignment() {
   const estadisticas = useMemo(() => {
     return {
       total: tarjetas.length,
+      disponibles: tarjetas.filter((tarjeta) => tarjeta.estado === 'DISPONIBLE').length,
+      reservadas: tarjetas.filter((tarjeta) => tarjeta.estado === 'RESERVADA').length,
       activas: tarjetas.filter((tarjeta) => tarjeta.estado === 'ACTIVA').length,
       bloqueadas: tarjetas.filter((tarjeta) => tarjeta.estado === 'BLOQUEADA').length,
       reportadas: tarjetas.filter((tarjeta) => tarjeta.estado === 'REPORTADA').length,
@@ -227,50 +239,97 @@ export default function RFIDAssignment() {
 
   const registrarTarjeta = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setProcesando(true);
+    setMensaje('');
+    setError('');
+
+    try {
+      if (!uid.trim()) throw new Error('Debes ingresar el UID de la tarjeta.');
+
+      const respuesta = await fetch('/api/rfid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accion: 'registrar', uid: uid.trim() }),
+      });
+      const resultado = await respuesta.json();
+      if (!respuesta.ok) throw new Error(resultado.error || 'No se pudo registrar la tarjeta.');
+
+      setMensaje(resultado.mensaje || 'Tarjeta agregada al inventario.');
+      setUid('');
+      setMostrarFormulario(false);
+      await cargarDatos();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ocurrió un error al registrar la tarjeta.');
+    } finally {
+      setProcesando(false);
+    }
+  };
+
+  const asignarTarjeta = async () => {
+    if (!tarjetaParaAsignarId || !usuarioAsignacionId) {
+      setError('Selecciona un usuario para asignar la tarjeta.');
+      return;
+    }
 
     setProcesando(true);
     setMensaje('');
     setError('');
 
     try {
-      if (!uid.trim()) {
-        throw new Error('Debes ingresar el UID de la tarjeta.');
-      }
-
-      if (!usuarioId) {
-        throw new Error('Debes seleccionar un usuario.');
-      }
-
+      const tarjeta = tarjetas.find((item) => item.id === tarjetaParaAsignarId);
+      const usuario = usuarios.find((item) => item.id === Number(usuarioAsignacionId));
       const respuesta = await fetch('/api/rfid', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          accion: 'registrar',
-          uid: uid.trim(),
-          usuarioId: Number(usuarioId),
+          accion: 'asignar',
+          rfidId: tarjetaParaAsignarId,
+          usuarioId: Number(usuarioAsignacionId),
         }),
       });
-
       const resultado = await respuesta.json();
+      if (!respuesta.ok) throw new Error(resultado.error || 'No se pudo asignar la tarjeta.');
 
-      if (!respuesta.ok) {
-        throw new Error(resultado.error || 'No se pudo registrar la tarjeta.');
-      }
-
-      setMensaje(resultado.mensaje || 'Tarjeta registrada correctamente.');
-      setUid('');
-      setUsuarioId('');
-      setMostrarFormulario(false);
-
+      setCodigoGenerado({
+        codigo: resultado.codigoActivacion,
+        uid: resultado.tarjeta?.uid ?? tarjeta?.uid ?? 'No disponible',
+        usuario: resultado.tarjeta?.usuario ?? usuario?.nombre ?? 'Usuario',
+        fechaExpiracion: resultado.fechaExpiracion,
+      });
+      setTarjetaParaAsignarId(null);
+      setUsuarioAsignacionId('');
       await cargarDatos();
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Ocurrió un error al registrar la tarjeta.'
-      );
+      setError(err instanceof Error ? err.message : 'Ocurrió un error al asignar la tarjeta.');
+    } finally {
+      setProcesando(false);
+    }
+  };
+
+  const reemitirCodigo = async (tarjeta: TarjetaRFID) => {
+    if (!window.confirm(`¿Generar un nuevo código para la tarjeta ${tarjeta.uid}? El código anterior quedará revocado.`)) return;
+
+    setProcesando(true);
+    setMensaje('');
+    setError('');
+    try {
+      const respuesta = await fetch('/api/rfid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accion: 'reemitar_codigo', rfidId: tarjeta.id }),
+      });
+      const resultado = await respuesta.json();
+      if (!respuesta.ok) throw new Error(resultado.error || 'No se pudo generar el nuevo código.');
+
+      setCodigoGenerado({
+        codigo: resultado.codigoActivacion,
+        uid: tarjeta.uid,
+        usuario: tarjeta.usuario?.nombre ?? 'Usuario asignado',
+        fechaExpiracion: resultado.fechaExpiracion,
+      });
+      await cargarDatos();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ocurrió un error al reemitir el código.');
     } finally {
       setProcesando(false);
     }
@@ -334,7 +393,7 @@ export default function RFIDAssignment() {
       observacion =
         window.prompt(
           'Observación para la aprobación (opcional):',
-          'Solicitud aprobada. Puede registrarse una nueva tarjeta RFID.'
+          'Solicitud aprobada. Puede asignarse una tarjeta disponible del inventario.'
         ) ?? '';
 
       if (observacion === null) return;
@@ -459,9 +518,10 @@ export default function RFIDAssignment() {
     }
   };
 
-  const obtenerNombreUsuario = (usuarioId: number) =>
-    usuarios.find((usuario) => usuario.id === usuarioId)?.nombre ??
-    `Usuario #${usuarioId}`;
+  const obtenerNombreUsuario = (usuarioId: number | null) =>
+    usuarioId === null
+      ? 'Sin usuario asignado'
+      : usuarios.find((usuario) => usuario.id === usuarioId)?.nombre ?? `Usuario #${usuarioId}`;
 
   const obtenerUIDHistorial = (rfidId: number) =>
     tarjetas.find((tarjeta) => tarjeta.id === rfidId)?.uid ??
@@ -473,13 +533,17 @@ export default function RFIDAssignment() {
 
     return tarjetas.some(
       (tarjeta) =>
-        tarjeta.usuario_id === usuarioId && tarjeta.estado === 'ACTIVA'
+        tarjeta.usuario_id === usuarioId && ['ACTIVA', 'RESERVADA'].includes(tarjeta.estado)
     );
   };
 
   const etiquetaAccion = (accion: string) => {
     const acciones: Record<string, string> = {
-      REGISTRO: 'Registro',
+      REGISTRO: 'Registro (histórico)',
+      INGRESO_INVENTARIO: 'Ingreso al inventario',
+      ASIGNACION: 'Asignación a usuario',
+      ACTIVACION_CODIGO: 'Activación mediante código',
+      REEMISION_CODIGO_ACTIVACION: 'Reemisión de código',
       BLOQUEO: 'Bloqueo',
       DESBLOQUEO: 'Desbloqueo',
       REPORTE: 'Reporte',
@@ -529,7 +593,7 @@ export default function RFIDAssignment() {
             Gestión de tarjetas RFID
           </h1>
           <p className="mt-1 text-sm text-slate-400">
-            Administra las tarjetas SPING, sus asignaciones y solicitudes de reposición.
+            Administra el inventario de tarjetas, sus asignaciones, activaciones y solicitudes de reposición.
           </p>
         </div>
 
@@ -570,11 +634,25 @@ export default function RFIDAssignment() {
       )}
 
       {/* ESTADÍSTICAS */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-7">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <p className="text-sm text-slate-400">Total tarjetas</p>
           <p className="mt-2 text-3xl font-bold text-white">
             {estadisticas.total}
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-sky-500/20 bg-slate-900/70 p-5">
+          <p className="text-sm text-slate-400">Disponibles</p>
+          <p className="mt-2 text-3xl font-bold text-sky-300">
+            {estadisticas.disponibles}
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-violet-500/20 bg-slate-900/70 p-5">
+          <p className="text-sm text-slate-400">Reservadas</p>
+          <p className="mt-2 text-3xl font-bold text-violet-300">
+            {estadisticas.reservadas}
           </p>
         </div>
 
@@ -615,12 +693,12 @@ export default function RFIDAssignment() {
               Registrar nueva tarjeta RFID
             </h2>
             <p className="mt-1 text-sm text-slate-400">
-              Asigna una tarjeta a un usuario activo de SPING.
+              Registra el UID de una tarjeta de la empresa. Quedará DISPONIBLE y sin usuario hasta que la asignes.
             </p>
           </div>
 
           <form onSubmit={registrarTarjeta} className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-1">
               <div>
                 <label
                   htmlFor="uid"
@@ -639,30 +717,6 @@ export default function RFIDAssignment() {
                 />
               </div>
 
-              <div>
-                <label
-                  htmlFor="usuarioId"
-                  className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                  Usuario
-                </label>
-                <select
-                  id="usuarioId"
-                  value={usuarioId}
-                  onChange={(event) => setUsuarioId(event.target.value)}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-emerald-500"
-                  required
-                >
-                  <option value="">Seleccionar usuario</option>
-                  {usuarios
-                    .filter((usuario) => usuario.estado === 'ACTIVO')
-                    .map((usuario) => (
-                      <option key={usuario.id} value={usuario.id}>
-                        {usuario.nombre} ({usuario.codigo_usuario})
-                      </option>
-                    ))}
-                </select>
-              </div>
             </div>
 
             <div className="flex flex-wrap justify-end gap-3">
@@ -683,6 +737,79 @@ export default function RFIDAssignment() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* MODAL: ASIGNAR TARJETA DISPONIBLE */}
+      {tarjetaParaAsignarId !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+            <h2 className="text-xl font-bold text-white">Asignar tarjeta RFID</h2>
+            <p className="mt-2 text-sm text-slate-400">
+              Tarjeta: <span className="font-mono text-emerald-300">{tarjetas.find((item) => item.id === tarjetaParaAsignarId)?.uid}</span>
+            </p>
+            <label htmlFor="usuarioAsignacionId" className="mt-5 mb-2 block text-sm font-medium text-slate-300">
+              Selecciona el usuario destinatario
+            </label>
+            <select
+              id="usuarioAsignacionId"
+              value={usuarioAsignacionId}
+              onChange={(event) => setUsuarioAsignacionId(event.target.value)}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-emerald-500"
+            >
+              <option value="">Seleccionar usuario</option>
+              {usuarios.filter((usuario) => usuario.estado === 'ACTIVO' && !tarjetas.some((tarjeta) => tarjeta.usuario_id === usuario.id && ['ACTIVA', 'RESERVADA'].includes(tarjeta.estado))).map((usuario) => (
+                <option key={usuario.id} value={usuario.id}>
+                  {usuario.nombre} ({usuario.codigo_usuario})
+                </option>
+              ))}
+            </select>
+            <p className="mt-3 text-xs text-slate-500">
+              Al confirmar, SPING reservará la tarjeta y generará un código de activación que se mostrará una sola vez.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setTarjetaParaAsignarId(null)} disabled={procesando} className="rounded-xl border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800">
+                Cancelar
+              </button>
+              <button type="button" onClick={asignarTarjeta} disabled={procesando || !usuarioAsignacionId} className="rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-50">
+                {procesando ? 'Asignando...' : 'Asignar y generar código'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: MOSTRAR CÓDIGO UNA SOLA VEZ */}
+      {codigoGenerado && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-500/30 bg-slate-900 p-6 shadow-2xl">
+            <div className="text-center">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 text-2xl text-emerald-300">✓</div>
+              <h2 className="text-xl font-bold text-white">Código de activación generado</h2>
+              <p className="mt-2 text-sm text-slate-400">Entrega este código a {codigoGenerado.usuario}. No volverá a mostrarse.</p>
+              <div className="my-5 rounded-xl border border-emerald-500/30 bg-slate-950 px-4 py-5">
+                <p className="font-mono text-3xl font-bold tracking-[0.25em] text-emerald-300">{codigoGenerado.codigo}</p>
+                <p className="mt-2 text-xs text-slate-500">UID: {codigoGenerado.uid}</p>
+              </div>
+              <p className="text-xs text-slate-500">Vence: {formatearFecha(codigoGenerado.fechaExpiracion)}</p>
+            </div>
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row">
+              <button type="button" onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(codigoGenerado.codigo);
+                  setMensaje('Código copiado al portapapeles. Entrégalo al usuario de forma segura.');
+                } catch {
+                  setError('No se pudo copiar automáticamente. Copia el código manualmente antes de cerrar esta ventana.');
+                }
+              }} className="flex-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm font-semibold text-emerald-300">
+                Copiar código
+              </button>
+              <button type="button" onClick={() => setCodigoGenerado(null)} className="flex-1 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950">
+                Ya lo guardé
+              </button>
+            </div>
+            <p className="mt-3 text-center text-xs text-amber-300">Asegúrate de entregar el código antes de cerrar esta ventana.</p>
+          </div>
         </div>
       )}
 
@@ -948,7 +1075,7 @@ export default function RFIDAssignment() {
                 Tarjetas registradas
               </h2>
               <p className="mt-1 text-sm text-slate-400">
-                Consulta y administra las tarjetas vinculadas a los usuarios.
+                Consulta el inventario completo de tarjetas, incluidas las disponibles y reservadas.
               </p>
             </div>
 
@@ -984,7 +1111,7 @@ export default function RFIDAssignment() {
               No se encontraron tarjetas RFID
             </p>
             <p className="mt-1 text-sm text-slate-500">
-              Intenta cambiar los filtros o registra una nueva tarjeta.
+              Intenta cambiar los filtros o ingresa una tarjeta al inventario.
             </p>
           </div>
         ) : (
@@ -996,7 +1123,8 @@ export default function RFIDAssignment() {
                   <th className="px-5 py-4 font-medium">Usuario</th>
                   <th className="px-5 py-4 font-medium">Rol</th>
                   <th className="px-5 py-4 font-medium">Estado</th>
-                  <th className="px-5 py-4 font-medium">Fecha asignación</th>
+                  <th className="px-5 py-4 font-medium">Ingreso</th>
+                  <th className="px-5 py-4 font-medium">Asignación</th>
                   <th className="px-5 py-4 text-right font-medium">Acciones</th>
                 </tr>
               </thead>
@@ -1037,11 +1165,40 @@ export default function RFIDAssignment() {
                     </td>
 
                     <td className="px-5 py-4 text-slate-400">
+                      {formatearFecha(tarjeta.fecha_ingreso)}
+                    </td>
+
+                    <td className="px-5 py-4 text-slate-400">
                       {formatearFecha(tarjeta.fecha_asignacion)}
                     </td>
 
                     <td className="px-5 py-4">
                       <div className="flex justify-end gap-2">
+                        {tarjeta.estado === 'DISPONIBLE' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTarjetaParaAsignarId(tarjeta.id);
+                              setUsuarioAsignacionId('');
+                            }}
+                            disabled={procesando}
+                            className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
+                          >
+                            Asignar
+                          </button>
+                        )}
+
+                        {tarjeta.estado === 'RESERVADA' && (
+                          <button
+                            type="button"
+                            onClick={() => reemitirCodigo(tarjeta)}
+                            disabled={procesando}
+                            className="rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs font-semibold text-violet-300 transition hover:bg-violet-500/20 disabled:opacity-50"
+                          >
+                            Nuevo código
+                          </button>
+                        )}
+
                         {tarjeta.estado === 'ACTIVA' && (
                           <button
                             type="button"
@@ -1071,7 +1228,7 @@ export default function RFIDAssignment() {
                         {tarjeta.estado === 'REPORTADA' &&
                           (usuarioTieneTarjetaActiva(tarjeta.usuario_id) ? (
                             <span className="text-xs text-slate-500">
-                              Usuario ya tiene una tarjeta activa
+                              Usuario ya tiene una tarjeta activa o reservada
                             </span>
                           ) : (
                             <button
@@ -1200,13 +1357,13 @@ export default function RFIDAssignment() {
               <li>El usuario reporta su tarjeta por pérdida, robo o daño.</li>
               <li>La tarjeta anterior queda en estado REPORTADA.</li>
               <li>El administrador revisa y aprueba o rechaza la solicitud.</li>
-              <li>Si se aprueba, el administrador registra una nueva tarjeta desde el formulario de registro.</li>
+              <li>Si se aprueba, el administrador asigna una tarjeta DISPONIBLE del inventario y entrega al usuario su código de activación.</li>
               <li>La tarjeta anterior permanece en estado REPORTADA y no se elimina.</li>
               <li>Si la empresa autoriza recuperar la tarjeta, el administrador puede reactivarla registrando la empresa, la referencia y el motivo de autorización.</li>
             </ol>
 
             <p className="mt-3 text-xs text-slate-500">
-              La aprobación de una reposición no crea automáticamente una tarjeta nueva. El administrador registra el nuevo UID desde el formulario superior. La reactivación de una tarjeta reportada es un proceso separado y requiere autorización empresarial.
+              La aprobación de una reposición no crea automáticamente una tarjeta nueva. El administrador asigna una tarjeta disponible del inventario y entrega un nuevo código de activación al usuario. La reactivación de una tarjeta reportada es un proceso separado y requiere autorización empresarial.
             </p>
           </div>
         </div>

@@ -65,6 +65,7 @@ export async function GET() {
         dispositivosResult,
         trabajadoresResult,
         reportesResult,
+        alertasResult,
       ] = await Promise.all([
         supabaseServer
           .from('dispositivos')
@@ -100,13 +101,36 @@ export async function GET() {
           .eq('estado', 'FINALIZADO')
           .eq('estado_revision', 'PENDIENTE')
           .order('fecha_fin', { ascending: false }),
+
+        supabaseServer
+          .from('reportes_dispositivo')
+          .select('id, dispositivo_id, tipo_reporte, severidad, descripcion, datos_adicionales, estado_reporte, fecha_reporte')
+          .eq('tipo_reporte', 'RECHAZOS_REITERADOS')
+          .in('estado_reporte', ['ABIERTO', 'EN_REVISION'])
+          .order('fecha_reporte', { ascending: false }),
       ]);
 
       if (dispositivosResult.error) throw dispositivosResult.error;
       if (trabajadoresResult.error) throw trabajadoresResult.error;
       if (reportesResult.error) throw reportesResult.error;
+      if (alertasResult.error) throw alertasResult.error;
 
       const reportes = reportesResult.data ?? [];
+      const alertas = alertasResult.data ?? [];
+      const idsDispositivosAlertas = [...new Set(alertas.map((a) => a.dispositivo_id))];
+      const dispositivosAlertasResult = idsDispositivosAlertas.length
+        ? await supabaseServer
+            .from('dispositivos')
+            .select('id, codigo_dispositivo, nombre, ubicacion, estado, limite_rechazos_revision, ventana_rechazos_minutos')
+            .in('id', idsDispositivosAlertas)
+        : { data: [], error: null };
+
+      if (dispositivosAlertasResult.error) throw dispositivosAlertasResult.error;
+
+      const alertasCompletas = alertas.map((alerta) => ({
+        ...alerta,
+        dispositivo: dispositivosAlertasResult.data?.find((d) => d.id === alerta.dispositivo_id) ?? null,
+      }));
 
       const dispositivoIds = [
         ...new Set(reportes.map((r) => r.dispositivo_id)),
@@ -152,6 +176,7 @@ export async function GET() {
         dispositivos: dispositivosResult.data ?? [],
         trabajadores: trabajadoresResult.data ?? [],
         reportesPendientes: reportesCompletos,
+        alertasRechazo: alertasCompletas,
       });
     }
 
@@ -238,6 +263,13 @@ export async function POST(request: Request) {
     const trabajadorId = Number(body.usuario_mantenimiento_id);
     const motivo = String(body.motivo ?? '').trim();
     const descripcion = String(body.descripcion_trabajo ?? '').trim();
+    const reporteDispositivoId = body.reporte_dispositivo_id == null
+      ? null
+      : Number(body.reporte_dispositivo_id);
+
+    if (reporteDispositivoId !== null && (!Number.isInteger(reporteDispositivoId) || reporteDispositivoId <= 0)) {
+      return NextResponse.json({ error: 'La alerta seleccionada no es válida.' }, { status: 400 });
+    }
 
     if (
       !Number.isInteger(dispositivoId) ||
@@ -299,9 +331,40 @@ export async function POST(request: Request) {
       );
     }
 
+    let alertaRechazo: any = null;
+
+    if (reporteDispositivoId !== null) {
+      const { data: alerta, error: alertaError } = await supabaseServer
+        .from('reportes_dispositivo')
+        .select('id, dispositivo_id, tipo_reporte, estado_reporte')
+        .eq('id', reporteDispositivoId)
+        .maybeSingle();
+
+      if (alertaError) throw alertaError;
+      if (!alerta || alerta.tipo_reporte !== 'RECHAZOS_REITERADOS' || alerta.dispositivo_id !== dispositivoId) {
+        return NextResponse.json({ error: 'La alerta no existe o no corresponde al dispositivo seleccionado.' }, { status: 404 });
+      }
+      if (!['ABIERTO', 'EN_REVISION'].includes(alerta.estado_reporte)) {
+        return NextResponse.json({ error: 'Esta alerta ya fue atendida o cerrada.' }, { status: 409 });
+      }
+
+      const { data: mantenimientoVinculado, error: vinculoError } = await supabaseServer
+        .from('mantenimientos')
+        .select('id, estado')
+        .eq('reporte_dispositivo_id', reporteDispositivoId)
+        .in('estado', ['PROGRAMADO', 'EN_CURSO'])
+        .limit(1)
+        .maybeSingle();
+      if (vinculoError) throw vinculoError;
+      if (mantenimientoVinculado) {
+        return NextResponse.json({ error: 'Esta alerta ya tiene un mantenimiento asociado.' }, { status: 409 });
+      }
+      alertaRechazo = alerta;
+    }
+
     if (
       dispositivo.estado === 'FUERA_DE_SERVICIO' ||
-      dispositivo.estado === 'MANTENIMIENTO'
+      (dispositivo.estado === 'MANTENIMIENTO' && !alertaRechazo)
     ) {
       return NextResponse.json(
         {
@@ -342,6 +405,7 @@ export async function POST(request: Request) {
           autorizado_por: autorizacion.perfil.id,
           motivo,
           descripcion_trabajo: descripcion,
+          reporte_dispositivo_id: reporteDispositivoId,
           estado: 'PROGRAMADO',
           fecha_inicio: null,
           fecha_fin: null,
@@ -351,6 +415,28 @@ export async function POST(request: Request) {
 
     if (crearError || !mantenimiento) {
       throw crearError ?? new Error('No se pudo crear el mantenimiento.');
+    }
+
+    if (alertaRechazo) {
+      const { error: actualizarAlertaError } = await supabaseServer
+        .from('reportes_dispositivo')
+        .update({ estado_reporte: 'EN_REVISION' })
+        .eq('id', alertaRechazo.id)
+        .in('estado_reporte', ['ABIERTO', 'EN_REVISION']);
+      if (actualizarAlertaError) {
+        await supabaseServer.from('mantenimientos').update({ estado: 'CANCELADO' }).eq('id', mantenimiento.id);
+        throw actualizarAlertaError;
+      }
+
+      const { error: actualizarEstadoError } = await supabaseServer
+        .from('dispositivos')
+        .update({ estado: 'MANTENIMIENTO' })
+        .eq('id', dispositivoId);
+      if (actualizarEstadoError) {
+        await supabaseServer.from('mantenimientos').update({ estado: 'CANCELADO' }).eq('id', mantenimiento.id);
+        await supabaseServer.from('reportes_dispositivo').update({ estado_reporte: alertaRechazo.estado_reporte }).eq('id', alertaRechazo.id);
+        throw actualizarEstadoError;
+      }
     }
 
     const { error: eventoError } = await supabaseServer
@@ -365,6 +451,7 @@ export async function POST(request: Request) {
         datos_adicionales: {
           mantenimiento_id: mantenimiento.id,
           trabajador_id: trabajador.id,
+          reporte_dispositivo_id: reporteDispositivoId,
         },
       });
 
@@ -374,7 +461,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        mensaje: 'Mantenimiento asignado correctamente.',
+        mensaje: alertaRechazo
+          ? 'Alerta asignada correctamente. El dispositivo pasó a estado MANTENIMIENTO.'
+          : 'Mantenimiento asignado correctamente.',
         mantenimiento,
         trabajador: {
           id: trabajador.id,
@@ -449,7 +538,7 @@ export async function PATCH(request: Request) {
       const { data: mantenimiento, error: consultaError } =
         await supabaseServer
           .from('mantenimientos')
-          .select('id, dispositivo_id, estado, resultado, estado_revision')
+          .select('id, dispositivo_id, reporte_dispositivo_id, estado, resultado, estado_revision')
           .eq('id', mantenimientoId)
           .maybeSingle();
 
@@ -572,6 +661,34 @@ export async function PATCH(request: Request) {
 
       const estadoNuevo =
         accion === 'APROBAR' ? 'OPERATIVO' : 'MANTENIMIENTO';
+
+      if (accion === 'APROBAR' && mantenimiento.reporte_dispositivo_id) {
+        const { error: cerrarAlertaError } = await supabaseServer
+          .from('reportes_dispositivo')
+          .update({ estado_reporte: 'RESUELTO' })
+          .eq('id', mantenimiento.reporte_dispositivo_id)
+          .in('estado_reporte', ['ABIERTO', 'EN_REVISION']);
+
+        if (cerrarAlertaError) {
+          console.error('No se pudo cerrar la alerta de rechazos:', cerrarAlertaError.message);
+          return NextResponse.json(
+            { error: 'La intervención fue aprobada, pero no se pudo cerrar la alerta asociada. Actualiza y vuelve a revisar.' },
+            { status: 500 }
+          );
+        }
+      }
+
+      if (accion === 'RECHAZAR' && mantenimiento.reporte_dispositivo_id) {
+        const { error: reabrirAlertaError } = await supabaseServer
+          .from('reportes_dispositivo')
+          .update({ estado_reporte: 'ABIERTO' })
+          .eq('id', mantenimiento.reporte_dispositivo_id)
+          .eq('estado_reporte', 'EN_REVISION');
+
+        if (reabrirAlertaError) {
+          console.error('No se pudo reabrir la alerta de rechazos:', reabrirAlertaError.message);
+        }
+      }
 
       const { error: eventoError } = await supabaseServer
         .from('eventos_dispositivo')

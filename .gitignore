@@ -1,10 +1,26 @@
+
 # Vercel
 .vercel/
 
-# Environment variables
-.env*.local
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Supabase local temporary files
+supabase/.temp/
 
 # Common ignores
-node_modules
-.next/
 .DS_Store
+Thumbs.db
