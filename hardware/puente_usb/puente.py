@@ -35,11 +35,16 @@ def positivo(n):
 
 
 def datos_credito(e, equipo):
-    """Validar sin relajar el flujo COMPLETO y admitir solo rechazo de clasificación real."""
+    """Validar el ciclo físico sin exigir tarjeta RFID; la identidad es opcional."""
     if (e.get('evento') != 'ciclo' or e.get('version') != 3 or
         not positivo(e.get('sesion')) or not positivo(e.get('ciclo_local')) or
-        not positivo(e.get('distancia_cm')) or not UID.fullmatch(str(e.get('uid')))):
+        not positivo(e.get('distancia_cm'))):
         return None
+
+    # UID válido: evento asociado a una tarjeta. Sin UID o con UID inválido:
+    # evento anónimo. En ambos casos se conserva el registro del reciclaje.
+    uid_recibido = e.get('uid')
+    uid = uid_recibido if isinstance(uid_recibido, str) and UID.fullmatch(uid_recibido) else None
 
     estado = e.get('estado')
     if estado == 'COMPLETO':
@@ -76,13 +81,19 @@ def datos_credito(e, equipo):
 
     indice = round(100 * (1023 - statistics.median(medianas)) / 1023)
     if estado == 'RECHAZO':
-        return {'uid': e['uid'], 'tipoResiduo': 'RECHAZO', 'motivoRechazo': e['motivo_rechazo'],
-                'direccionMotor': '', 'humedad': indice, 'distancia': e['distancia_cm'],
-                'codigoDispositivo': equipo}
-    seco = e['destino'] == 0
-    return {'uid': e['uid'], 'tipoResiduo': 'SECO' if seco else 'HUMEDO',
-            'direccionMotor': 'IZQUIERDA' if seco else 'DERECHA',
-            'humedad': indice, 'distancia': e['distancia_cm'], 'codigoDispositivo': equipo}
+        datos = {'tipoResiduo': 'RECHAZO', 'motivoRechazo': e['motivo_rechazo'],
+                 'direccionMotor': '', 'humedad': indice, 'distancia': e['distancia_cm'],
+                 'codigoDispositivo': equipo}
+    else:
+        seco = e['destino'] == 0
+        datos = {'tipoResiduo': 'SECO' if seco else 'HUMEDO',
+                 'direccionMotor': 'IZQUIERDA' if seco else 'DERECHA',
+                 'humedad': indice, 'distancia': e['distancia_cm'],
+                 'codigoDispositivo': equipo}
+
+    if uid is not None:
+        datos['uid'] = uid
+    return datos
 
 
 def abrir_db(path):
@@ -168,8 +179,12 @@ def enviar_creditos(path, api, campo, avisos, terminar, despertar):
                 if abono_confirmado(respuesta, campo):
                     nuevo = 'abonado'
                     avisos.put(('credito', (e['sesion'], e['ciclo_local'])))
+                elif respuesta.get('identidadReconocida') is False:
+                    # El reciclaje quedó registrado como anónimo; no enviar CREDITO.
+                    nuevo = 'registrado_anonimo'
                 else:
-                    nuevo = 'registrado_sin_confirmacion_de_puntos'
+                    # Incluye usuarios reconocidos que no acumulan puntos (p. ej. mantenimiento).
+                    nuevo = 'registrado_sin_puntos'
                 detalle = json.dumps(respuesta, ensure_ascii=False)[:1800]
             elif status == 0 or status >= 500 or status in (401, 408, 429):
                 nuevo, detalle = 'pendiente', f'Reintento HTTP {status}'
@@ -179,9 +194,10 @@ def enviar_creditos(path, api, campo, avisos, terminar, despertar):
                 db.execute('update eventos set estado=?,detalle=?,intentos=?,proximo=? where id=?',
                            (nuevo, detalle, intentos+1, time.time()+min(60, 2**min(intentos+1,6)), clave))
             print(f'Ciclo {clave} · {nuevo} · HTTP {status}', flush=True)
-            if nuevo == 'registrado_sin_confirmacion_de_puntos':
-                campos = [k for k,v in respuesta.items() if type(v) in (int,float)]
-                print('Consulta el saldo en el dashboard. Campos numéricos devueltos:', ', '.join(campos) or 'ninguno', flush=True)
+            if nuevo == 'registrado_anonimo':
+                print('Clasificación guardada sin tarjeta RFID. No se otorgaron puntos.', flush=True)
+            elif nuevo == 'registrado_sin_puntos':
+                print('Clasificación guardada. Esta identidad no recibió puntos.', flush=True)
     finally:
         db.close()
 
