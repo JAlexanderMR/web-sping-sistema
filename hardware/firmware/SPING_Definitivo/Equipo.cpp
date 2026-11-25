@@ -442,7 +442,8 @@ void ejecutar(int cm) {
   tarjeta.ventana = true; tarjeta.inicio = millis();
   exigirCerrada = exigirLibre = true;
   if (!brazoEnReposo() || posicionSelector() < 0) detener("INICIO_INSEGURO");
-  if (!fallo) pantalla("Acerca y retira", "tu tarjeta SPING");
+  // La tarjeta es opcional: el ciclo físico continúa aunque no se presente un UID.
+  if (!fallo) pantalla("Tarjeta opcional", "Acerca p/ puntos");
   if (pausa(3000)) {
     int ruta = clasificar();
     if (!fallo && !brazoEnReposo()) detener("BRAZO_FUERA");
