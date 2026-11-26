@@ -22,10 +22,12 @@ export function DashboardNavigation({
     <header className="sticky top-0 z-50 border-b border-border bg-background/95 shadow-sm backdrop-blur-xl">
       <nav className="mx-auto flex min-h-16 max-w-[1440px] items-center justify-between gap-4 px-4 sm:px-6">
 
-        {/* LOGOTIPO */}
+        {/* LOGOTIPO: REGRESAR A LA PÁGINA PÚBLICA */}
         <Link
-          href="/dashboard"
-          className="flex shrink-0 items-center gap-2 font-heading text-lg font-bold"
+          href="/"
+          aria-label="Volver a la página principal de SPING"
+          title="Volver al inicio de SPING"
+          className="flex shrink-0 items-center gap-2 font-heading text-lg font-bold transition-opacity hover:opacity-80"
         >
           <span className="flex size-9 items-center justify-center rounded-full bg-primary text-primary-foreground">
             ♻

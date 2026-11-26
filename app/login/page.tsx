@@ -1,6 +1,7 @@
 
 'use client';
 
+import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase/client';
@@ -20,14 +21,15 @@ export default function LoginPage() {
   const [cargando, setCargando] = useState(false);
 
   useEffect(() => {
-    const { data: { subscription } } =
-      supabase.auth.onAuthStateChange((event) => {
-        if (event === 'PASSWORD_RECOVERY') {
-          setModo('nueva-password');
-          setMensaje('');
-          setError('');
-        }
-      });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setModo('nueva-password');
+        setMensaje('');
+        setError('');
+      }
+    });
 
     return () => subscription.unsubscribe();
   }, []);
@@ -178,6 +180,16 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#041d22] px-4 py-10 text-[#fff7dc]">
       <div className="w-full max-w-md">
+
+        {/* BOTÓN PARA VOLVER A LA PÁGINA PRINCIPAL */}
+        <Link
+          href="/"
+          className="mb-5 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[#8bbec6] transition-colors hover:bg-[#10364b] hover:text-white"
+        >
+          <span aria-hidden="true">←</span>
+          Volver al inicio
+        </Link>
+
         <div className="rounded-3xl border border-[#8bbec6]/25 bg-[#10364b] p-8 shadow-[0_20px_60px_rgba(0,0,0,0.3)]">
 
           <div className="mb-8 text-center">

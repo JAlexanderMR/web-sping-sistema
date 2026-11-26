@@ -64,15 +64,16 @@ export function HeroSection({ identity }: { identity: ProjectIdentity }) {
 
           <figure className="relative overflow-hidden rounded-3xl border border-[#8bbec6]/25 bg-[#10364b] shadow-[0_20px_50px_rgba(0,0,0,0.35)]">
             <div className="relative">
-              <Image
-                src="/images/sping-smart-bin.jpg"
-                alt="Prototipo real de SPING: caja de madera con pantalla LCD encendida al frente, motorreductor de 9 V y sensor ultrasónico en la parte superior, y cajón lateral para el segundo compartimento"
-                width={1200}
-                height={1600}
-                priority
-                sizes="(min-width: 1024px) 560px, 100vw"
-                className="aspect-square w-full object-cover object-[center_55%]"
-              />
+              
+            <Image
+              src="/images/sping-smart-bin.jpg"
+              alt="Prototipo SPING: sistema inteligente de clasificación de residuos con compartimentos para orgánico, rechazo e inorgánico"
+              width={1600}
+              height={900}
+              priority
+              sizes="(min-width: 1024px) 560px, 100vw"
+              className="aspect-[16/9] w-full object-cover object-center"
+            />
 
               <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#10364b] to-transparent" />
 
